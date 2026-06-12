@@ -1,12 +1,14 @@
-import sqlite3
+import psycopg2
+import psycopg2.extras
 from datetime import datetime
-from config import DB_PATH
+from config import DATABASE_URL
 
 
 def get_connection():
-    """SQLite ulanishini qaytaradi."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    """PostgreSQL ulanishini qaytaradi."""
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL topilmadi! Baza manzili noto'g'ri.")
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 
@@ -18,8 +20,8 @@ def init_db():
     # Sessiyalar jadvali
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
+            id SERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
             started_at TEXT NOT NULL,
             ended_at TEXT,
             is_active INTEGER DEFAULT 1
@@ -29,24 +31,23 @@ def init_db():
     # Xabarlar jadvali
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            chat_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES sessions(id),
+            chat_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
             username TEXT,
             first_name TEXT,
             last_name TEXT,
-            sent_at TEXT NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sessions(id)
+            sent_at TEXT NOT NULL
         )
     """)
 
     # Guruh a'zolari jadvali — xabar yozgan barcha foydalanuvchilar
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS group_members (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
+            id SERIAL PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
             username TEXT,
             first_name TEXT,
             last_name TEXT,
@@ -56,6 +57,7 @@ def init_db():
     """)
 
     conn.commit()
+    cursor.close()
     conn.close()
 
 
@@ -65,17 +67,19 @@ def start_session(chat_id: int) -> int:
     cursor = conn.cursor()
 
     cursor.execute("""
-        UPDATE sessions SET is_active = 0, ended_at = ?
-        WHERE chat_id = ? AND is_active = 1
+        UPDATE sessions SET is_active = 0, ended_at = %s
+        WHERE chat_id = %s AND is_active = 1
     """, (datetime.now().isoformat(), chat_id))
 
     cursor.execute("""
         INSERT INTO sessions (chat_id, started_at, is_active)
-        VALUES (?, ?, 1)
+        VALUES (%s, %s, 1)
+        RETURNING id
     """, (chat_id, datetime.now().isoformat()))
 
-    session_id = cursor.lastrowid
+    session_id = cursor.fetchone()[0]
     conn.commit()
+    cursor.close()
     conn.close()
     return session_id
 
@@ -83,26 +87,28 @@ def start_session(chat_id: int) -> int:
 def end_session(chat_id: int) -> dict | None:
     """Aktiv sessiyani to'xtatadi. Sessiya ma'lumotlarini qaytaradi."""
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
     cursor.execute("""
-        SELECT * FROM sessions WHERE chat_id = ? AND is_active = 1
+        SELECT * FROM sessions WHERE chat_id = %s AND is_active = 1
     """, (chat_id,))
     session = cursor.fetchone()
 
     if not session:
+        cursor.close()
         conn.close()
         return None
 
     ended_at = datetime.now().isoformat()
     cursor.execute("""
-        UPDATE sessions SET is_active = 0, ended_at = ?
-        WHERE id = ?
+        UPDATE sessions SET is_active = 0, ended_at = %s
+        WHERE id = %s
     """, (ended_at, session["id"]))
 
     conn.commit()
     result = dict(session)
     result["ended_at"] = ended_at
+    cursor.close()
     conn.close()
     return result
 
@@ -110,11 +116,12 @@ def end_session(chat_id: int) -> dict | None:
 def get_active_session(chat_id: int) -> dict | None:
     """Guruhning aktiv sessiyasini qaytaradi."""
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute("""
-        SELECT * FROM sessions WHERE chat_id = ? AND is_active = 1
+        SELECT * FROM sessions WHERE chat_id = %s AND is_active = 1
     """, (chat_id,))
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
     return dict(row) if row else None
 
@@ -129,7 +136,7 @@ def upsert_member(chat_id: int, user_id: int, username: str | None,
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO group_members (chat_id, user_id, username, first_name, last_name, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT(chat_id, user_id) DO UPDATE SET
             username   = excluded.username,
             first_name = excluded.first_name,
@@ -137,6 +144,7 @@ def upsert_member(chat_id: int, user_id: int, username: str | None,
             last_seen  = excluded.last_seen
     """, (chat_id, user_id, username, first_name, last_name, datetime.now().isoformat()))
     conn.commit()
+    cursor.close()
     conn.close()
 
 
@@ -147,16 +155,17 @@ def record_message(session_id: int, chat_id: int, user_id: int,
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO messages (session_id, chat_id, user_id, username, first_name, last_name, sent_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
     """, (session_id, chat_id, user_id, username, first_name, last_name, datetime.now().isoformat()))
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def get_session_stats(session_id: int) -> list[dict]:
     """Sessiyada qatnashganlar va ularning xabar sonini qaytaradi."""
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute("""
         SELECT
             user_id,
@@ -165,11 +174,12 @@ def get_session_stats(session_id: int) -> list[dict]:
             last_name,
             COUNT(*) AS message_count
         FROM messages
-        WHERE session_id = ?
-        GROUP BY user_id
+        WHERE session_id = %s
+        GROUP BY user_id, username, first_name, last_name
         ORDER BY message_count DESC
     """, (session_id,))
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return [dict(row) for row in rows]
 
@@ -178,8 +188,9 @@ def get_session_total_messages(session_id: int) -> int:
     """Sessiyada jami xabarlar sonini qaytaradi."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,))
+    cursor.execute("SELECT COUNT(*) FROM messages WHERE session_id = %s", (session_id,))
     count = cursor.fetchone()[0]
+    cursor.close()
     conn.close()
     return count
 
@@ -190,16 +201,17 @@ def get_absent_members(chat_id: int, session_id: int) -> list[dict]:
     foydalanuvchilar ro'yxatini qaytaradi.
     """
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute("""
         SELECT gm.user_id, gm.username, gm.first_name, gm.last_name
         FROM group_members gm
-        WHERE gm.chat_id = ?
+        WHERE gm.chat_id = %s
           AND gm.user_id NOT IN (
-              SELECT DISTINCT user_id FROM messages WHERE session_id = ?
+              SELECT DISTINCT user_id FROM messages WHERE session_id = %s
           )
         ORDER BY gm.first_name, gm.username
     """, (chat_id, session_id))
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return [dict(row) for row in rows]
