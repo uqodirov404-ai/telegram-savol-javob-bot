@@ -243,3 +243,11 @@ def get_absent_members(chat_id: int, session_id: int) -> list[dict]:
             """, (chat_id, session_id))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+
+def get_approved_groups() -> list[dict]:
+    "`"`"Barcha tasdiqlangan guruhlarni qaytaradi."`"`"
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute("SELECT chat_id, group_name FROM approved_groups WHERE status = 'approved'")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
