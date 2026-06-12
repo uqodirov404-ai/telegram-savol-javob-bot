@@ -11,3 +11,8 @@ if not BOT_TOKEN:
 
 # PostgreSQL bazasi URL manzili
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# Asosiy admin (bot egasi) ID si
+ADMIN_ID = os.environ.get("ADMIN_ID", "")
+if ADMIN_ID:
+    ADMIN_ID = int(ADMIN_ID)
