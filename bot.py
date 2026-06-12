@@ -65,11 +65,20 @@ def run_flask():
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Xabar yuboruvchi guruh admin yoki egasimi tekshiradi."""
-    member = await context.bot.get_chat_member(
-        update.effective_chat.id,
-        update.effective_user.id,
-    )
-    return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    try:
+        if update.message and update.message.sender_chat and update.message.sender_chat.id == update.effective_chat.id:
+            return True
+        member = await context.bot.get_chat_member(
+            update.effective_chat.id,
+            update.effective_user.id,
+        )
+        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception as e:
+        logger.error("is_admin da xatolik: %s", e)
+        # Agar telegramdan xatolik qaytsa (anonim foydalanuvchi va h.k.), xavfsizlik yuzasidan o'tkazmaymiz
+        # Lekin egasi bo'lsa va is_admin qulasa, return True qilib yuborish xavfli. 
+        # Mayli, False qaytaramiz. Agar u rostan e'tibor bermayotgan bo'lsa logsda ko'rinadi.
+        return False
 
 
 def esc(text: str) -> str:
@@ -342,6 +351,18 @@ async def cmd_yakunladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private" or (ADMIN_ID and update.effective_user.id != ADMIN_ID):
+        return
+    try:
+        with open("bot_log.txt", "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            logs = "".join(lines[-50:])
+            await update.message.reply_text(f"Oxirgi 50 ta loglar:\n\n<pre>{esc(logs)}</pre>", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await update.message.reply_text(f"Log o'qishda xatolik: {e}")
+
 async def cmd_guruhlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type != "private":
@@ -463,6 +484,7 @@ def main():
     app.add_handler(CommandHandler("yakunladik", cmd_yakunladik))
     app.add_handler(CommandHandler("holat", cmd_holat))
     app.add_handler(CommandHandler("guruhlar", cmd_guruhlar))
+    app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CallbackQueryHandler(admin_button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
