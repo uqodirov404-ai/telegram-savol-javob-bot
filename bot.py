@@ -13,6 +13,7 @@ Buyruqlar:
 import logging
 import html
 import os
+import asyncio
 import threading
 from datetime import datetime
 
@@ -85,7 +86,7 @@ async def check_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, sil
     if ADMIN_ID and chat.id == ADMIN_ID:
         return True
 
-    status = db.get_group_status(chat.id)
+    status = await asyncio.to_thread(db.get_group_status, chat.id)
 
     if status == 'approved':
         return True
@@ -105,7 +106,7 @@ async def check_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, sil
         return False
 
     if status is None:
-        db.request_group_approval(chat.id, chat.title)
+        await asyncio.to_thread(db.request_group_approval, chat.id, chat.title)
         if not silent:
             await context.bot.send_message(
                 chat.id,
@@ -145,7 +146,7 @@ async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if data.startswith("approve_"):
         chat_id = int(data.split("_")[1])
-        db.set_group_status(chat_id, "approved")
+        await asyncio.to_thread(db.set_group_status, chat_id, "approved")
         await query.edit_message_text(f"{query.message.text}\n\n<b>✅ Ruxsat berildi!</b>", parse_mode=ParseMode.HTML)
         try:
             await context.bot.send_message(chat_id, "✅ Ruxsat olindi, ishni boshlashimiz mumkin!")
@@ -154,7 +155,7 @@ async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     elif data.startswith("reject_"):
         chat_id = int(data.split("_")[1])
-        db.set_group_status(chat_id, "rejected")
+        await asyncio.to_thread(db.set_group_status, chat_id, "rejected")
         await query.edit_message_text(f"{query.message.text}\n\n<b>❌ Rad etildi!</b>", parse_mode=ParseMode.HTML)
         try:
             await context.bot.send_message(chat_id, "❌ Ruxsat rad etildi. Bot guruhdan chiqib ketmoqda.")
@@ -269,7 +270,7 @@ async def cmd_boshladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Faqat guruh adminlari sessiyani boshlay oladi.")
         return
 
-    existing = db.get_active_session(chat.id)
+    existing = await asyncio.to_thread(db.get_active_session, chat.id)
     if existing:
         await update.message.reply_text(
             "⚠️ Sessiya allaqachon boshlangan!\n"
@@ -277,7 +278,7 @@ async def cmd_boshladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    db.start_session(chat.id)
+    await asyncio.to_thread(db.start_session, chat.id)
     logger.info("Sessiya boshlandi: chat_id=%s, admin=%s", chat.id, user.id)
 
     await update.message.reply_text(
@@ -303,7 +304,7 @@ async def cmd_yakunladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Faqat guruh adminlari sessiyani yakunlay oladi.")
         return
 
-    session = db.end_session(chat.id)
+    session = await asyncio.to_thread(db.end_session, chat.id)
     if not session:
         await update.message.reply_text(
             "⚠️ Hozir aktiv sessiya yo'q.\n"
@@ -313,9 +314,9 @@ async def cmd_yakunladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info("Sessiya yakunlandi: chat_id=%s, session_id=%s", chat.id, session["id"])
 
-    stats = db.get_session_stats(session["id"])
-    total = db.get_session_total_messages(session["id"])
-    absent = db.get_absent_members(chat.id, session["id"])
+    stats = await asyncio.to_thread(db.get_session_stats, session["id"])
+    total = await asyncio.to_thread(db.get_session_total_messages, session["id"])
+    absent = await asyncio.to_thread(db.get_absent_members, chat.id, session["id"])
 
     if not stats:
         await update.message.reply_text(
@@ -344,7 +345,7 @@ async def cmd_holat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Faqat guruh adminlari holatni ko'ra oladi.")
         return
 
-    session = db.get_active_session(chat.id)
+    session = await asyncio.to_thread(db.get_active_session, chat.id)
     if not session:
         await update.message.reply_text(
             "🔴 Hozir aktiv sessiya yo'q.\n"
@@ -352,8 +353,8 @@ async def cmd_holat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    total = db.get_session_total_messages(session["id"])
-    stats = db.get_session_stats(session["id"])
+    total = await asyncio.to_thread(db.get_session_total_messages, session["id"])
+    stats = await asyncio.to_thread(db.get_session_stats, session["id"])
     participant_count = len(stats)
 
     await update.message.reply_text(
@@ -381,7 +382,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message and message.text and message.text.startswith("/"):
         return
 
-    db.upsert_member(
+    await asyncio.to_thread(
+        db.upsert_member,
         chat_id=chat.id,
         user_id=user.id,
         username=user.username,
@@ -389,11 +391,12 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name,
     )
 
-    session = db.get_active_session(chat.id)
+    session = await asyncio.to_thread(db.get_active_session, chat.id)
     if not session:
         return
 
-    db.record_message(
+    await asyncio.to_thread(
+        db.record_message,
         session_id=session["id"],
         chat_id=chat.id,
         user_id=user.id,
