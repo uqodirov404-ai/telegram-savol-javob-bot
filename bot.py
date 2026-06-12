@@ -17,17 +17,18 @@ import threading
 from datetime import datetime
 
 from flask import Flask
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 from telegram.constants import ChatMemberStatus, ParseMode
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, ADMIN_ID
 import database as db
 
 # -----------------------------------------------------------------
@@ -73,6 +74,93 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 def esc(text: str) -> str:
     """HTML maxsus belgilarini xavfsiz ko'rinishga o'tkazadi."""
     return html.escape(str(text))
+
+
+async def check_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, silent: bool = False) -> bool:
+    """Guruh ruxsat etilganligini tekshiradi."""
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        return True
+
+    if ADMIN_ID and chat.id == ADMIN_ID:
+        return True
+
+    status = db.get_group_status(chat.id)
+
+    if status == 'approved':
+        return True
+
+    if status == 'rejected':
+        if not silent:
+            await context.bot.send_message(chat.id, "Kechirasiz, ushbu guruhda botdan foydalanish taqiqlangan.")
+            await context.bot.leave_chat(chat.id)
+        return False
+
+    if status == 'pending':
+        if not silent:
+            await context.bot.send_message(
+                chat.id, 
+                "Kechirasiz, men bu guruhda ishlashim uchun dasturchi ruxsati kerak. Iltimos @Umidjon_Qodirov ga murojaat qiling."
+            )
+        return False
+
+    if status is None:
+        db.request_group_approval(chat.id, chat.title)
+        if not silent:
+            await context.bot.send_message(
+                chat.id,
+                "Kechirasiz, men bu guruhda ishlashim uchun dasturchi ruxsati kerak. Iltimos @Umidjon_Qodirov ga murojaat qiling."
+            )
+
+        if ADMIN_ID:
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Ruxsat berish", callback_data=f"approve_{chat.id}"),
+                    InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_{chat.id}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"Yangi guruh botni ishlatmoqchi!\n\nGuruh nomi: <b>{esc(chat.title)}</b>\nID: <code>{chat.id}</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+        return False
+
+    return False
+
+
+async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admindan kelgan tugma (Inline Keyboard) bosilishini boshqaradi."""
+    query = update.callback_query
+    user = query.from_user
+
+    if ADMIN_ID and user.id != ADMIN_ID:
+        await query.answer("Sizda bunga huquq yo'q!", show_alert=True)
+        return
+
+    await query.answer()
+    data = query.data
+
+    if data.startswith("approve_"):
+        chat_id = int(data.split("_")[1])
+        db.set_group_status(chat_id, "approved")
+        await query.edit_message_text(f"{query.message.text}\n\n<b>✅ Ruxsat berildi!</b>", parse_mode=ParseMode.HTML)
+        try:
+            await context.bot.send_message(chat_id, "✅ Ruxsat olindi, ishni boshlashimiz mumkin!")
+        except Exception as e:
+            logger.error("Guruhga xabar yuborishda xatolik: %s", e)
+
+    elif data.startswith("reject_"):
+        chat_id = int(data.split("_")[1])
+        db.set_group_status(chat_id, "rejected")
+        await query.edit_message_text(f"{query.message.text}\n\n<b>❌ Rad etildi!</b>", parse_mode=ParseMode.HTML)
+        try:
+            await context.bot.send_message(chat_id, "❌ Ruxsat rad etildi. Bot guruhdan chiqib ketmoqda.")
+            await context.bot.leave_chat(chat_id)
+        except Exception as e:
+            logger.error("Guruhdan chiqishda xatolik: %s", e)
 
 
 def format_username(row: dict) -> str:
@@ -167,6 +255,9 @@ def build_stats_message(session: dict, stats: list[dict],
 # -----------------------------------------------------------------
 
 async def cmd_boshladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_approval(update, context):
+        return
+
     chat = update.effective_chat
     user = update.effective_user
 
@@ -198,6 +289,9 @@ async def cmd_boshladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_yakunladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_approval(update, context):
+        return
+
     chat = update.effective_chat
     user = update.effective_user
 
@@ -237,6 +331,9 @@ async def cmd_yakunladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_holat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_approval(update, context):
+        return
+
     chat = update.effective_chat
 
     if chat.type not in ("group", "supergroup"):
@@ -268,6 +365,9 @@ async def cmd_holat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_approval(update, context, silent=True):
+        return
+
     chat = update.effective_chat
     user = update.effective_user
     message = update.effective_message
@@ -321,6 +421,7 @@ def main():
     app.add_handler(CommandHandler("boshladik", cmd_boshladik))
     app.add_handler(CommandHandler("yakunladik", cmd_yakunladik))
     app.add_handler(CommandHandler("holat", cmd_holat))
+    app.add_handler(CallbackQueryHandler(admin_button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
     logger.info("Bot ishga tushdi. To'xtatish uchun Ctrl+C bosing.")
