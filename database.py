@@ -17,6 +17,16 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
+    # Tasdiqlangan guruhlar jadvali
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS approved_groups (
+            chat_id BIGINT PRIMARY KEY,
+            group_name TEXT,
+            status TEXT DEFAULT 'pending', -- 'pending', 'approved', 'rejected'
+            requested_at TEXT NOT NULL
+        )
+    """)
+
     # Sessiyalar jadvali
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -56,6 +66,43 @@ def init_db():
         )
     """)
 
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_group_status(chat_id: int) -> str | None:
+    """Guruhning holatini qaytaradi ('pending', 'approved', 'rejected' yoki None)."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cursor.execute("SELECT status FROM approved_groups WHERE chat_id = %s", (chat_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row["status"] if row else None
+
+
+def request_group_approval(chat_id: int, group_name: str):
+    """Yangi guruh ruxsat so'rab bazaga yoziladi."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO approved_groups (chat_id, group_name, status, requested_at)
+        VALUES (%s, %s, 'pending', %s)
+        ON CONFLICT(chat_id) DO NOTHING
+    """, (chat_id, group_name, datetime.now().isoformat()))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def set_group_status(chat_id: int, status: str):
+    """Guruhning ruxsat holatini yangilaydi ('approved' yoki 'rejected')."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE approved_groups SET status = %s WHERE chat_id = %s
+    """, (status, chat_id))
     conn.commit()
     cursor.close()
     conn.close()
