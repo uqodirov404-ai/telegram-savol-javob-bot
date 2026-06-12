@@ -163,6 +163,16 @@ async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logger.error("Guruhdan chiqishda xatolik: %s", e)
 
+    elif data.startswith("revoke_"):
+        chat_id = int(data.split("_")[1])
+        await asyncio.to_thread(db.set_group_status, chat_id, "rejected")
+        await query.edit_message_text(f"{query.message.text}\n\n<b>❌ Ruxsat bekor qilindi va bot guruhdan chiqib ketmoqda!</b>", parse_mode=ParseMode.HTML)
+        try:
+            await context.bot.send_message(chat_id, "❌ Dasturchi tomonidan ruxsat bekor qilindi. Bot guruhdan chiqib ketmoqda.")
+            await context.bot.leave_chat(chat_id)
+        except Exception as e:
+            logger.error("Guruhdan chiqishda xatolik: %s", e)
+
 
 def format_username(row: dict) -> str:
     """Foydalanuvchi nomini formatlaydi: @username yoki Ism Familiya."""
@@ -331,6 +341,34 @@ async def cmd_yakunladik(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(OGOHLANTIRISH, parse_mode=ParseMode.HTML)
 
 
+
+async def cmd_guruhlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type != "private":
+        await update.message.reply_text("⛔ Bu buyruq faqat shaxsiy xabarlarda ishlaydi.")
+        return
+
+    if ADMIN_ID and update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Bu buyruq faqat bot egasi uchun.")
+        return
+
+    groups = await asyncio.to_thread(db.get_approved_groups)
+    if not groups:
+        await update.message.reply_text("📋 Hozircha tasdiqlangan guruhlar yo'q.")
+        return
+
+    await update.message.reply_text("✅ <b>Tasdiqlangan guruhlar ro'yxati:</b>\n<i>Quyidagi tugmalar orqali guruhlardan ruxsatni bekor qilishingiz mumkin.</i>", parse_mode=ParseMode.HTML)
+
+    for g in groups:
+        keyboard = [[InlineKeyboardButton("❌ Ruxsatni bekor qilish", callback_data=f"revoke_{g['chat_id']}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"Guruh nomi: <b>{esc(g['group_name'])}</b>\nID: <code>{g['chat_id']}</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
+
+
 async def cmd_holat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_approval(update, context):
         return
@@ -424,6 +462,7 @@ def main():
     app.add_handler(CommandHandler("boshladik", cmd_boshladik))
     app.add_handler(CommandHandler("yakunladik", cmd_yakunladik))
     app.add_handler(CommandHandler("holat", cmd_holat))
+    app.add_handler(CommandHandler("guruhlar", cmd_guruhlar))
     app.add_handler(CallbackQueryHandler(admin_button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
